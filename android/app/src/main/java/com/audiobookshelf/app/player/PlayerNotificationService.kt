@@ -19,6 +19,8 @@ import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaControllerCompat
 import android.support.v4.media.session.MediaSessionCompat
 import androidx.media.VolumeProviderCompat
+import android.media.AudioAttributes as SystemAudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
@@ -98,6 +100,11 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   lateinit var mediaSession: MediaSessionCompat
   private var remoteVolumeProvider: VolumeProviderCompat? = null
   private lateinit var transportControls: MediaControllerCompat.TransportControls
+  private lateinit var audioManager: AudioManager
+  private var audioFocusRequest: AudioFocusRequest? = null
+  private var resumeOnAudioFocusGain = false
+  private var isAudioFocusDucked = false
+  private var volumeBeforeAudioFocusDuck: Float? = null
 
   lateinit var mediaManager: MediaManager
   lateinit var apiHandler: ApiHandler
@@ -128,6 +135,46 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   // These are used to trigger reloading if
   private var forceReloadingAndroidAuto: Boolean = false
   private var firstLoadDone: Boolean = false
+
+  private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+    when (focusChange) {
+      AudioManager.AUDIOFOCUS_LOSS -> {
+        val wasPlaying = currentPlayer.isPlaying
+        if (wasPlaying) {
+          currentPlayer.pause()
+        }
+        clearAudioFocusDucking(true)
+        resumeOnAudioFocusGain = false
+        abandonAudioFocus()
+      }
+      AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+      AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+        val shouldDuck = getAudioFocusBehavior() == AudioFocusBehaviorSetting.DUCK
+        val reduction = getAudioFocusDuckReduction()
+        if (shouldDuck && reduction <= 0f) {
+          clearAudioFocusDucking(true)
+          resumeOnAudioFocusGain = false
+        } else if (shouldDuck && reduction < 1f) {
+          applyAudioFocusDucking(reduction)
+          resumeOnAudioFocusGain = false
+        } else {
+          val wasPlaying = currentPlayer.isPlaying
+          if (wasPlaying) {
+            currentPlayer.pause()
+          }
+          clearAudioFocusDucking(true)
+          resumeOnAudioFocusGain = wasPlaying
+        }
+      }
+      AudioManager.AUDIOFOCUS_GAIN -> {
+        clearAudioFocusDucking(true)
+        if (resumeOnAudioFocusGain && !currentPlayer.isPlaying) {
+          currentPlayer.play()
+        }
+        resumeOnAudioFocusGain = false
+      }
+    }
+  }
 
   fun isBrowseTreeInitialized(): Boolean {
     return this::browseTree.isInitialized
@@ -194,6 +241,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     DeviceManager.widgetUpdater?.onPlayerChanged(this)
 
     playerNotificationManager.setPlayer(null)
+    abandonAudioFocus()
     mPlayer.release()
     castPlayer?.release()
     mediaSession.release()
@@ -214,6 +262,11 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     Log.d(tag, "onCreate")
     super.onCreate()
     ctx = this
+    audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    audioFocusRequest = null
+    resumeOnAudioFocusGain = false
+    isAudioFocusDucked = false
+    volumeBeforeAudioFocusDuck = null
 
     // Initialize Paper
     DbManager.initialize(ctx)
@@ -394,7 +447,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                     .setUsage(C.USAGE_MEDIA)
                     .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
                     .build()
-    mPlayer.setAudioAttributes(audioAttributes, true)
+    mPlayer.setAudioAttributes(audioAttributes, false)
 
     // attach player to playerNotificationManager
     playerNotificationManager.setPlayer(mPlayer)
@@ -539,7 +592,8 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
               tag,
               "Prepare complete for session ${currentPlaybackSession?.displayTitle} | ${currentPlayer.mediaItemCount}"
       )
-      currentPlayer.playWhenReady = playWhenReady
+            val shouldPlayWhenReady = if (playWhenReady) requestAudioFocusForPlayback() else false
+            currentPlayer.playWhenReady = shouldPlayWhenReady
       currentPlayer.setPlaybackSpeed(playbackRateToUse)
 
       currentPlayer.prepare()
@@ -932,12 +986,20 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
       Log.d(tag, "Already playing")
       return
     }
+    if (!requestAudioFocusForPlayback()) {
+      Log.w(tag, "play: Failed to get audio focus")
+      return
+    }
+    clearAudioFocusDucking(true)
     currentPlayer.volume = 1F
     currentPlayer.play()
   }
 
   fun pause() {
     currentPlayer.pause()
+    clearAudioFocusDucking(true)
+    resumeOnAudioFocusGain = false
+    abandonAudioFocus()
   }
 
   fun playPause(): Boolean {
@@ -1006,6 +1068,9 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
 
   fun closePlayback(calledOnError: Boolean? = false) {
     Log.d(tag, "closePlayback")
+    clearAudioFocusDucking(true)
+    resumeOnAudioFocusGain = false
+    abandonAudioFocus()
     val config = DeviceManager.serverConnectionConfig
 
     val isLocal = mediaProgressSyncer.currentIsLocal
@@ -1081,6 +1146,74 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
 
   private val deviceSettings
     get() = DeviceManager.deviceData.deviceSettings ?: DeviceSettings.default()
+
+  private fun getAudioFocusBehavior(): AudioFocusBehaviorSetting {
+    return deviceSettings.audioFocusBehavior ?: AudioFocusBehaviorSetting.PAUSE
+  }
+
+  private fun getAudioFocusDuckReduction(): Float {
+    return (deviceSettings.audioFocusDuckPercent ?: 0.8f).coerceIn(0f, 1f)
+  }
+
+  private fun requestAudioFocusForPlayback(): Boolean {
+    val focusResult =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+              val request =
+                      AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                              .setAudioAttributes(
+                                      SystemAudioAttributes.Builder()
+                                              .setUsage(SystemAudioAttributes.USAGE_MEDIA)
+                                              .setContentType(SystemAudioAttributes.CONTENT_TYPE_SPEECH)
+                                              .build()
+                              )
+                              .setWillPauseWhenDucked(
+                                      getAudioFocusBehavior() != AudioFocusBehaviorSetting.DUCK ||
+                                              getAudioFocusDuckReduction() >= 1f
+                              )
+                              .setOnAudioFocusChangeListener(audioFocusChangeListener)
+                              .build()
+              audioFocusRequest = request
+              audioManager.requestAudioFocus(request)
+            } else {
+              @Suppress("DEPRECATION")
+              audioManager.requestAudioFocus(
+                      audioFocusChangeListener,
+                      AudioManager.STREAM_MUSIC,
+                      AudioManager.AUDIOFOCUS_GAIN
+              )
+            }
+
+    return focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+  }
+
+  private fun abandonAudioFocus() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+      audioFocusRequest = null
+    } else {
+      @Suppress("DEPRECATION")
+      audioManager.abandonAudioFocus(audioFocusChangeListener)
+    }
+  }
+
+  private fun applyAudioFocusDucking(reduction: Float) {
+    val clampedReduction = reduction.coerceIn(0f, 1f)
+    if (!isAudioFocusDucked) {
+      volumeBeforeAudioFocusDuck = currentPlayer.volume
+    }
+    val currentVolume = volumeBeforeAudioFocusDuck ?: currentPlayer.volume
+    val duckedVolume = (currentVolume * (1f - clampedReduction)).coerceIn(0f, 1f)
+    currentPlayer.volume = duckedVolume
+    isAudioFocusDucked = true
+  }
+
+  private fun clearAudioFocusDucking(restoreVolume: Boolean) {
+    if (restoreVolume && isAudioFocusDucked) {
+      currentPlayer.volume = (volumeBeforeAudioFocusDuck ?: 1f).coerceIn(0f, 1f)
+    }
+    isAudioFocusDucked = false
+    volumeBeforeAudioFocusDuck = null
+  }
 
   fun getPlayItemRequestPayload(forceTranscode: Boolean): PlayItemRequestPayload {
     return PlayItemRequestPayload(

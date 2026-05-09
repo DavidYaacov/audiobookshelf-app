@@ -82,6 +82,15 @@ object DeviceManager {
     if (deviceData.deviceSettings?.streamingUsingCellular == null) {
       deviceData.deviceSettings?.streamingUsingCellular = StreamingUsingCellularSetting.ALWAYS
     }
+    if (deviceData.deviceSettings?.audioFocusBehavior == null) {
+      deviceData.deviceSettings?.audioFocusBehavior = AudioFocusBehaviorSetting.PAUSE
+    }
+    val audioFocusDuckPercent = deviceData.deviceSettings?.audioFocusDuckPercent
+    if (audioFocusDuckPercent == null) {
+      deviceData.deviceSettings?.audioFocusDuckPercent = 0.8f
+    } else {
+      deviceData.deviceSettings?.audioFocusDuckPercent = audioFocusDuckPercent.coerceIn(0f, 1f)
+    }
     if (deviceData.deviceSettings?.androidAutoBrowseLimitForGrouping == null) {
       deviceData.deviceSettings?.androidAutoBrowseLimitForGrouping = 100
     }

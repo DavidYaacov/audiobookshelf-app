@@ -67,6 +67,33 @@
       </div>
       <p class="pl-4">{{ $strings.LabelAllowSeekingOnMediaControls }}</p>
     </div>
+    <div v-if="!isiOS" class="py-3 flex items-center">
+      <p class="pr-4 w-36">{{ $strings.LabelPlaybackAudioFocusBehavior || 'Audio focus behavior' }}</p>
+      <div @click.stop="showAudioFocusOptions">
+        <ui-text-input :value="audioFocusOptionText" readonly append-icon="expand_more" style="max-width: 200px" />
+      </div>
+    </div>
+    <div v-if="!isiOS && settings.audioFocusBehavior === 'DUCK'" class="py-3 flex items-center">
+      <p class="pr-4 w-36 whitespace-nowrap">
+        {{ $strings.LabelAudioFocusDuckPercent || 'Duck amount' }}
+      </p>
+
+      <div class="flex items-center flex-1 min-w-0">
+        <input
+          type="range"
+          min="0"
+          max="1"
+          step="0.01"
+          v-model.number="settings.audioFocusDuckPercent"
+          @change="saveSettings"
+          class="w-full"
+        />
+
+        <span class="pl-4 flex-shrink-0">
+          {{ audioFocusDuckPercentText }}
+        </span>
+      </div>
+    </div>
 
     <!-- Sleep timer settings -->
     <template v-if="!isiOS">
@@ -203,6 +230,8 @@ export default {
         disableAutoRewind: false,
         enableAltView: true,
         allowSeekingOnMediaControls: false,
+        audioFocusBehavior: 'PAUSE',
+        audioFocusDuckPercent: 0.8,
         jumpForwardTime: 10,
         jumpBackwardsTime: 10,
         enableMp3IndexSeeking: false,
@@ -338,6 +367,16 @@ export default {
           text: this.$strings.LabelSequenceDescending,
           value: 'DESC'
         }
+      ],
+      audioFocusItems: [
+        {
+          text: this.$strings.LabelAudioFocusPause || 'Pause on interruption',
+          value: 'PAUSE'
+        },
+        {
+          text: this.$strings.LabelAudioFocusDuck || 'Duck (lower volume)',
+          value: 'DUCK'
+        }
       ]
     }
   },
@@ -368,6 +407,13 @@ export default {
     },
     jumpBackwardsOption() {
       return this.getJumpLabel(this.settings.jumpBackwardsTime)
+    },
+    audioFocusOptionText() {
+      const item = this.audioFocusItems.find((i) => i.value === this.settings.audioFocusBehavior)
+      return item?.text || ''
+    },
+    audioFocusDuckPercentText() {
+      return `${Math.round((this.settings.audioFocusDuckPercent || 0) * 100)}%`
     },
     themeOptionItems() {
       return [
@@ -428,6 +474,7 @@ export default {
       else if (this.moreMenuSetting === 'downloadUsingCellular') return this.downloadUsingCellularItems
       else if (this.moreMenuSetting === 'streamingUsingCellular') return this.streamingUsingCellularItems
       else if (this.moreMenuSetting === 'androidAutoBrowseSeriesSequenceOrder') return this.androidAutoBrowseSeriesSequenceOrderItems
+      else if (this.moreMenuSetting === 'audioFocus') return this.audioFocusItems
       else if (this.moreMenuSetting === 'jumpForward')
         return this.jumpForwardSecondsOptions.map((value) => ({
           text: this.getJumpLabel(value),
@@ -448,6 +495,7 @@ export default {
       if (this.moreMenuSetting === 'downloadUsingCellular') return this.settings.downloadUsingCellular
       if (this.moreMenuSetting === 'streamingUsingCellular') return this.settings.streamingUsingCellular
       if (this.moreMenuSetting === 'androidAutoBrowseSeriesSequenceOrder') return this.settings.androidAutoBrowseSeriesSequenceOrder
+      if (this.moreMenuSetting === 'audioFocus') return this.settings.audioFocusBehavior
       if (this.moreMenuSetting === 'shakeSensitivity') return this.settings.shakeSensitivity
       if (this.moreMenuSetting === 'hapticFeedback') return this.settings.hapticFeedback
       return null
@@ -504,6 +552,10 @@ export default {
       this.moreMenuSetting = 'androidAutoBrowseSeriesSequenceOrder'
       this.showMoreMenuDialog = true
     },
+    showAudioFocusOptions() {
+      this.moreMenuSetting = 'audioFocus'
+      this.showMoreMenuDialog = true
+    },
     clickMenuAction(action) {
       this.showMoreMenuDialog = false
       if (this.moreMenuSetting === 'shakeSensitivity') {
@@ -526,6 +578,9 @@ export default {
         this.saveSettings()
       } else if (this.moreMenuSetting === 'androidAutoBrowseSeriesSequenceOrder') {
         this.settings.androidAutoBrowseSeriesSequenceOrder = action
+        this.saveSettings()
+      } else if (this.moreMenuSetting === 'audioFocus') {
+        this.settings.audioFocusBehavior = action
         this.saveSettings()
       } else if (this.moreMenuSetting === 'jumpForward') {
         this.settings.jumpForwardTime = action
@@ -646,6 +701,13 @@ export default {
       this.settings.jumpForwardTime = deviceSettings.jumpForwardTime || 10
       this.settings.jumpBackwardsTime = deviceSettings.jumpBackwardsTime || 10
       this.settings.enableMp3IndexSeeking = !!deviceSettings.enableMp3IndexSeeking
+
+      this.settings.audioFocusBehavior = deviceSettings.audioFocusBehavior || 'PAUSE'
+      const audioFocusDuckPercent =
+        !isNaN(deviceSettings.audioFocusDuckPercent)
+          ? Number(deviceSettings.audioFocusDuckPercent)
+          : 0.8
+      this.settings.audioFocusDuckPercent = Math.min(1, Math.max(0, audioFocusDuckPercent))
 
       this.settings.lockOrientation = deviceSettings.lockOrientation || 'NONE'
       this.lockCurrentOrientation = this.settings.lockOrientation !== 'NONE'

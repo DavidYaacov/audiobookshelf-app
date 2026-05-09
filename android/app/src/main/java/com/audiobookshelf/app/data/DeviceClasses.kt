@@ -28,6 +28,10 @@ enum class StreamingUsingCellularSetting {
   ASK, ALWAYS, NEVER
 }
 
+enum class AudioFocusBehaviorSetting {
+  PAUSE, DUCK
+}
+
 enum class AndroidAutoBrowseSeriesSequenceOrderSetting {
   ASC, DESC
 }
@@ -142,6 +146,8 @@ data class DeviceSettings(
   var languageCode: String,
   var downloadUsingCellular: DownloadUsingCellularSetting,
   var streamingUsingCellular: StreamingUsingCellularSetting,
+  var audioFocusBehavior: AudioFocusBehaviorSetting?,
+  var audioFocusDuckPercent: Float?,
   var androidAutoBrowseLimitForGrouping: Int,
   var androidAutoBrowseSeriesSequenceOrder: AndroidAutoBrowseSeriesSequenceOrderSetting
 ) {
@@ -171,6 +177,8 @@ data class DeviceSettings(
         languageCode = "en-us",
         downloadUsingCellular = DownloadUsingCellularSetting.ALWAYS,
         streamingUsingCellular = StreamingUsingCellularSetting.ALWAYS,
+        audioFocusBehavior = AudioFocusBehaviorSetting.PAUSE,
+        audioFocusDuckPercent = 0.8f,
         androidAutoBrowseLimitForGrouping = 100,
         androidAutoBrowseSeriesSequenceOrder = AndroidAutoBrowseSeriesSequenceOrderSetting.ASC
       )
